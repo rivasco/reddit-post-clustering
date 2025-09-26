@@ -1,0 +1,8 @@
+praw
+mysql-connector-python
+beautifulsoup4
+pytesseract
+Pillow
+wordcloud
+requests
+python-dotenv
