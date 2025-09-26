@@ -142,7 +142,7 @@ def fetch_posts(subreddit_name):
             print(f"Error with {sort_name}: {e}")
             continue
     
-    return posts_data[:n]
+    return posts_data
 
 def save_posts(posts):
     conn = mysql.connector.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASS, database=DB_NAME)
