@@ -6,6 +6,5 @@ Pillow
 wordcloud
 requests
 python-dotenv
-nltk
+sentence-transformers
 chromadb
-gensim
