@@ -122,3 +122,9 @@ if __name__=='__main__':
     model, document_vectors = train_doc2vec(data)
     store_document_vectors(data, document_vectors)
     document_clustering()
+
+DB_USER=cindy
+DB_PASS=NewP@ssw0rd
+REDDIT_CLIENT_ID=SuXHKB3DJ3F7qFtGbsONeQ
+REDDIT_CLIENT_SECRET=AmsSh2ZHJRJDC4uRvCWaO4KJ5RZy8Q
+REDDIT_USER_AGENT=reddit-scraper-lab
