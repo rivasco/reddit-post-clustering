@@ -66,11 +66,6 @@ def train_doc2vec(data):
     return model, document_vectors
 
 
-def infer_vectors(model, text):
-    vector = model.infer_vector(word_tokenize(text.lower()))
-    return np.asanyarray(vector, dtype="float32")
-
-
 def store_document_vectors(documents, document_vectors):
     # delete old collection if exists
     existing_collections = [c.name for c in client.list_collections()]
@@ -94,26 +89,6 @@ def store_document_vectors(documents, document_vectors):
         metadatas=metadatas
     )
 
-
-def store_new_vector(text, vector):
-    # create a collection
-    collection = client.get_or_create_collection(
-        name=COLLECTION_NAME
-    )
-
-    # write new text and vector
-    new_id = f"doc-{uuid.uuid4()}"
-    metadata = {"source": "Reddit"}
-
-    collection.add(
-        ids=[new_id],
-        documents=[text],
-        embeddings=[vector],
-        metadatas=[metadata]
-    )
-
-    return new_id
-
 def document_clustering():
     # get documents and vectors
     collection = client.get_or_create_collection(name=COLLECTION_NAME)
@@ -124,11 +99,6 @@ def document_clustering():
     documents = result["documents"]
     embeddings = result["embeddings"]
 
-    ######## PUT CLUSTERING CODE HERE
-
-
-def new_text_clustering(vector):
-    pass
     ######## PUT CLUSTERING CODE HERE
 
 
@@ -152,9 +122,3 @@ if __name__=='__main__':
     model, document_vectors = train_doc2vec(data)
     store_document_vectors(data, document_vectors)
     document_clustering()
-
-    new_data = "I like Hawaii"
-    vector = infer_vectors(model, new_data)
-
-    new_id = store_new_vector(new_data, vector)
-    # new_text_clustering(vector)
