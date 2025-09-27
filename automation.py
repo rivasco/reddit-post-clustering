@@ -3,14 +3,13 @@ import os
 import mysql.connector
 import uuid
 import numpy as np
-from gensim.models.doc2vec import Doc2Vec, TaggedDocument
-import nltk
-from nltk.tokenize import word_tokenize
+from sentence_transformers import SentenceTransformer
 import numpy as np
 import pandas as pd
 import chromadb
-nltk.download('punkt')
-nltk.download('punkt_tab')
+import argparse
+import logging
+import time
 
 # Chromadb Configuration
 COLLECTION_NAME = "Vacation_Texts_and_Vectors"
@@ -51,18 +50,10 @@ def load_raw_texts():
     return rows
 
 def train_doc2vec(data):
-    # preproces the documents, and create TaggedDocuments
-    tagged_data = [TaggedDocument(words=word_tokenize(doc.lower()), tags=[str(i)]) for i, doc in enumerate(data)]
-
-    # train the Doc2vec model
-    model = Doc2Vec(vector_size=100, min_count=1, epochs=100)
-
-    model.build_vocab(tagged_data)
-    model.train(tagged_data, total_examples=model.corpus_count, epochs=model.epochs)
-
+    model = SentenceTransformer('all-MiniLM-L6-v2') 
     # get the document vectors
-    document_vectors = [model.infer_vector(word_tokenize(doc.lower())) for doc in data]
-    
+    document_vectors = model.encode(data, convert_to_numpy=True)
+
     return model, document_vectors
 
 
@@ -93,7 +84,7 @@ def document_clustering():
     # get documents and vectors
     collection = client.get_or_create_collection(name=COLLECTION_NAME)
     result = collection.get(
-        include=["ids", "documents", "embeddings"]
+        include=["documents", "embeddings"]
     )
     ids = result["ids"]
     documents = result["documents"]
@@ -102,29 +93,68 @@ def document_clustering():
     ######## PUT CLUSTERING CODE HERE
 
 
-if __name__=='__main__':
-    # fetch data
-    init_db()
-    main()
+def run_pipeline_once():  # NEW
+    try:
+        logging.info("Fetching data (init_db/main) ...")
+        init_db()
+        main()
+        logging.info("Fetching done.")
+    except Exception as e:
+        logging.exception("Fetching/processing failed: %s", e)
+        return  # 失败就结束本轮
 
-    # read data from MySQL
-    rows = load_raw_texts()
-    data = [
-        " ".join(filter(None, [
-            to_text(row.get("title")),
-            to_text(row.get("keywords")),
-            to_text(row.get("body")),
-            to_text(row.get("images")),
-        ])).strip()
-        for row in rows
-    ]
+    try:
+        logging.info("Loading data from MySQL ...")
+        rows = load_raw_texts()
+        if not rows:
+            logging.warning("Cannot read any data from MySQL .")
+            return
+        data = [
+            " ".join(filter(None, [
+                to_text(row.get("title")),
+                to_text(row.get("keywords")),
+                to_text(row.get("body")),
+                to_text(row.get("images")),
+            ])).strip()
+            for row in rows
+        ]
+        logging.info("Processing data (Doc2Vec training) ...")
+        model, document_vectors = train_doc2vec(data)
+        logging.info("Processing done. Writing vectors to Chroma ...")
+        store_document_vectors(data, document_vectors)
+        logging.info("Chroma updated.")
+        logging.info("Clustering ...")
+        document_clustering()
+        logging.info("Clustering done.")
+    except Exception as e:
+        logging.exception("Database updates or vectorization failed: %s", e)
 
-    model, document_vectors = train_doc2vec(data)
-    store_document_vectors(data, document_vectors)
-    document_clustering()
+if __name__ == '__main__':
+    # NEW: Command-line arguments and logging
+    parser = argparse.ArgumentParser(description="Run reddit pipeline and update DB on an interval (minutes).")
+    parser.add_argument("interval", type=float,
+                        help="Interval in minutes. For example, 5 means run every 5 minutes; 0 means run once and exit.")
+    parser.add_argument("--log-level", default="INFO", help="Log level: DEBUG/INFO/WARNING/ERROR")
+    args = parser.parse_args()
 
-DB_USER=cindy
-DB_PASS=NewP@ssw0rd
-REDDIT_CLIENT_ID=SuXHKB3DJ3F7qFtGbsONeQ
-REDDIT_CLIENT_SECRET=AmsSh2ZHJRJDC4uRvCWaO4KJ5RZy8Q
-REDDIT_USER_AGENT=reddit-scraper-lab
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper(), logging.INFO),
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    interval = max(0.0, args.interval)
+    logging.info("Program started, interval=%.2f minutes.", interval)
+
+    # Run once immediately
+    run_pipeline_once()
+
+    # If interval > 0, run repeatedly at the specified interval
+    if interval > 0:
+        try:
+            while True:
+                logging.info("Sleeping for %.2f minutes ...", interval)
+                time.sleep(interval * 60.0)
+                run_pipeline_once()
+        except KeyboardInterrupt:
+            logging.info("Received interrupt signal, exiting.")
