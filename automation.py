@@ -21,7 +21,6 @@ DB_PORT = int(os.getenv("DB_PORT", 3306))
 DB_USER = os.getenv("DB_USER", "phpmyadmin")
 DB_PASS = os.getenv("DB_PASS", "root")
 DB_NAME = os.getenv("DB_NAME", "reddit_scraper")
-TABLE_NAME = "posts"
 
 def to_text(x):
     if x is None:
@@ -41,7 +40,7 @@ def load_raw_texts():
                                    password=DB_PASS,
                                    database=DB_NAME)
     cur = conn.cursor(dictionary=True)
-    cur.execute(f"SELECT * FROM {TABLE_NAME}")
+    cur.execute("select p.id as id, p.title as title, p.body as body, p.keywords as keywords, img_agg.ocr_concat as images from posts as p left join (select post_id, group_concat(ocr_text order by id separator ' ') as ocr_concat from images group by post_id) as img_agg on p.id = img_agg.post_id")
     rows = cur.fetchall()
 
     cur.close()
