@@ -1,6 +1,7 @@
 from reddit_scraper import init_db, main
 import os
 import mysql.connector
+import uuid
 import numpy as np
 from gensim.models.doc2vec import Doc2Vec, TaggedDocument
 import nltk
@@ -8,13 +9,12 @@ from nltk.tokenize import word_tokenize
 import numpy as np
 import pandas as pd
 import chromadb
-# nltk.download('punkt')
-# nltk.download('punkt_tab')
+nltk.download('punkt')
+nltk.download('punkt_tab')
 
 # Chromadb Configuration
 COLLECTION_NAME = "Vacation_Texts_and_Vectors"
 client = chromadb.Client()
-LAST_ID = 0
 
 # MySQL Configuration
 DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
@@ -72,6 +72,11 @@ def infer_vectors(model, text):
 
 
 def store_document_vectors(documents, document_vectors):
+    # delete old collection if exists
+    existing_collections = [c.name for c in client.list_collections()]
+    if COLLECTION_NAME in existing_collections:
+        client.delete_collection(name=COLLECTION_NAME)
+
     # create a collection
     collection = client.get_or_create_collection(
         name=COLLECTION_NAME,
@@ -79,10 +84,8 @@ def store_document_vectors(documents, document_vectors):
     )
 
     # write raw texts and vectors
-    ids = [f"doc-{i}" for i in range(len(documents))]
+    ids = [f"doc-{uuid.uuid4()}" for _ in range(len(documents))]
     metadatas = [{"source": "Reddit"} for _ in documents]
-    global LAST_ID
-    LAST_ID = ids
 
     collection.add(
         ids=ids,
@@ -93,20 +96,13 @@ def store_document_vectors(documents, document_vectors):
 
 
 def store_new_vector(text, vector):
-    # delete old collection if exists
-    existing_collections = [c.name for c in client.list_collections()]
-    if COLLECTION_NAME in existing_collections:
-        client.delete_collection(name=COLLECTION_NAME)
-
     # create a collection
     collection = client.get_or_create_collection(
         name=COLLECTION_NAME
     )
 
     # write new text and vector
-    global LAST_ID
-    LAST_ID += 1
-    new_id = f"doc-{LAST_ID}"
+    new_id = f"doc-{uuid.uuid4()}"
     metadata = {"source": "Reddit"}
 
     collection.add(
@@ -154,7 +150,7 @@ if __name__=='__main__':
     ]
 
     model, document_vectors = train_doc2vec(data)
-    store_new_vector(data, document_vectors)
+    store_document_vectors(data, document_vectors)
     document_clustering()
 
     new_data = "I like Hawaii"
