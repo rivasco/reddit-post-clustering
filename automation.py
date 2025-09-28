@@ -10,10 +10,16 @@ import chromadb
 import argparse
 import logging
 import time
+from joblib import dump, load
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import normalize
+from sklearn.cluster import KMeans
+
 
 # Chromadb Configuration
 COLLECTION_NAME = "Vacation_Texts_and_Vectors"
 client = chromadb.Client()
+
 
 # MySQL Configuration
 DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
@@ -21,6 +27,8 @@ DB_PORT = int(os.getenv("DB_PORT", 3306))
 DB_USER = os.getenv("DB_USER", "phpmyadmin")
 DB_PASS = os.getenv("DB_PASS", "root")
 DB_NAME = os.getenv("DB_NAME", "reddit_scraper")
+TABLE_NAME = "posts"
+
 
 def to_text(x):
     if x is None:
@@ -31,6 +39,7 @@ def to_text(x):
         return " ".join(f"{k}:{v}" for k, v in x.items())
     return str(x)
 
+
 def load_raw_texts():
     # Read text from MySQL
     conn = mysql.connector.connect(host=DB_HOST, 
@@ -39,13 +48,30 @@ def load_raw_texts():
                                    password=DB_PASS,
                                    database=DB_NAME)
     cur = conn.cursor(dictionary=True)
-    cur.execute("select p.id as id, p.title as title, p.body as body, p.keywords as keywords, img_agg.ocr_concat as images from posts as p left join (select post_id, group_concat(ocr_text order by id separator ' ') as ocr_concat from images group by post_id) as img_agg on p.id = img_agg.post_id")
+    cur.execute(f"SELECT * FROM {TABLE_NAME}")
     rows = cur.fetchall()
 
     cur.close()
     conn.close()
 
     return rows
+
+
+def clustering(document_vectors):
+    # normalization and PCA
+    Xn = normalize(document_vectors)                        
+    pca = PCA(n_components=min(50, Xn.shape[1]), random_state=42)
+    Xp = pca.fit_transform(Xn)
+    
+    # Apply K-Means clustering
+    best_k = 2
+    km = KMeans(n_clusters=best_k, n_init=20, random_state=42)
+    labels_k = list(km.fit_predict(Xp))
+
+    dump(pca, 'pca.joblib')
+    dump(km, 'kmeans.joblib')
+
+    return km, pca, labels_k
 
 def train_doc2vec(data):
     model = SentenceTransformer('all-MiniLM-L6-v2') 
@@ -54,11 +80,21 @@ def train_doc2vec(data):
 
     return model, document_vectors
 
+
+def infer_vectors(text):
+    model = SentenceTransformer('all-MiniLM-L6-v2') 
+    vector = model.encode(text, convert_to_numpy=True)
+    return np.asanyarray(vector, dtype="float32")
+
+
 def store_document_vectors(documents, document_vectors):
     # delete old collection if exists
     existing_collections = [c.name for c in client.list_collections()]
     if COLLECTION_NAME in existing_collections:
         client.delete_collection(name=COLLECTION_NAME)
+
+    # clustering
+    km, pca, labels = clustering(document_vectors)
 
     # create a collection
     collection = client.get_or_create_collection(
@@ -68,7 +104,7 @@ def store_document_vectors(documents, document_vectors):
 
     # write raw texts and vectors
     ids = [f"doc-{uuid.uuid4()}" for _ in range(len(documents))]
-    metadatas = [{"source": "Reddit"} for _ in documents]
+    metadatas = [{"source": "Reddit", "cluster": int(label)} for label in labels]
 
     collection.add(
         ids=ids,
@@ -77,7 +113,36 @@ def store_document_vectors(documents, document_vectors):
         metadatas=metadatas
     )
 
-def run_pipeline_once():  # NEW
+
+def store_new_vector(text, vector, km, pca):
+    pca = load('pca.joblib')
+    km = load('kmeans.joblib')
+    v = vector.reshape(1, -1)
+    v_n = normalize(v)
+    v_p = pca.transform(v_n)
+    cid = int(km.predict(v_p)[0])
+
+    # create a collection
+    collection = client.get_or_create_collection(
+        name=COLLECTION_NAME
+    )
+
+    # write new text and vector
+    new_id = f"doc-{uuid.uuid4()}"
+    metadata = {"source": "Reddit", "cluster": cid}
+
+    collection.add(
+        ids=[new_id],
+        documents=[text],
+        embeddings=[vector],
+        metadatas=[metadata]
+    )
+    print(f"New message belongs to cluster {cid}.")
+
+    return new_id, cid
+
+
+def run_pipeline_once():
     try:
         logging.info("Fetching data (init_db/main) ...")
         init_db()
@@ -85,7 +150,7 @@ def run_pipeline_once():  # NEW
         logging.info("Fetching done.")
     except Exception as e:
         logging.exception("Fetching/processing failed: %s", e)
-        return  # 失败就结束本轮
+        return
 
     try:
         logging.info("Loading data from MySQL ...")
@@ -111,10 +176,11 @@ def run_pipeline_once():  # NEW
         logging.exception("Database updates or vectorization failed: %s", e)
 
 if __name__ == '__main__':
-    # NEW: Command-line arguments and logging
-    parser = argparse.ArgumentParser(description="Run reddit pipeline and update DB on an interval (minutes).")
-    parser.add_argument("interval", type=float,
-                        help="Interval in minutes. For example, 5 means run every 5 minutes; 0 means run once and exit.")
+    parser = argparse.ArgumentParser(description="Run pipeline once (--interval) and/or add a new message (--message).")
+    parser.add_argument("--interval", type=float, default=None,
+                        help="If provided, run the pipeline once.")
+    parser.add_argument("--message", type=str, default=None,
+                        help="If provided, treat it as a new post to encode and store.")
     parser.add_argument("--log-level", default="INFO", help="Log level: DEBUG/INFO/WARNING/ERROR")
     args = parser.parse_args()
 
@@ -124,18 +190,26 @@ if __name__ == '__main__':
         datefmt="%H:%M:%S",
     )
 
-    interval = max(0.0, args.interval)
-    logging.info("Program started, interval=%.2f minutes.", interval)
+    did_anything = False
 
-    # Run once immediately
-    run_pipeline_once()
+    # A) run pipeline once if interval is provided
+    if args.interval is not None:
+        logging.info("Running pipeline once (interval=%.2f provided).", args.interval)
+        run_pipeline_once()
+        did_anything = True
 
-    # If interval > 0, run repeatedly at the specified interval
-    if interval > 0:
+    # B) if message is provided, encode & insert with persisted PCA/KMeans
+    if args.message:
+        logging.info("Processing single message insert.")
+        # load / create the sentence model (stateless; not saved to disk)
+        sbert = SentenceTransformer('all-MiniLM-L6-v2')
+        vec = sbert.encode(args.message, convert_to_numpy=True).astype("float32")
         try:
-            while True:
-                logging.info("Sleeping for %.2f minutes ...", interval)
-                time.sleep(interval * 60.0)
-                run_pipeline_once()
-        except KeyboardInterrupt:
-            logging.info("Received interrupt signal, exiting.")
+            new_id, cid = store_new_vector(args.message, vec, km=None, pca=None)  # will load from disk
+            logging.info("Inserted new message id=%s, cluster=%d", new_id, cid)
+        except Exception as e:
+            logging.exception("Failed to insert new message: %s", e)
+        did_anything = True
+
+    if not did_anything:
+        parser.print_help()
