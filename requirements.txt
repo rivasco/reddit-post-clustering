@@ -8,3 +8,8 @@ requests
 python-dotenv
 sentence-transformers
 chromadb
+numpy
+scikit-learn
+spacy
+umap-learn
+plotly
