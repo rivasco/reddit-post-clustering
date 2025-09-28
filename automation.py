@@ -31,7 +31,6 @@ def to_text(x):
         return " ".join(f"{k}:{v}" for k, v in x.items())
     return str(x)
 
-
 def load_raw_texts():
     # Read text from MySQL
     conn = mysql.connector.connect(host=DB_HOST, 
@@ -55,7 +54,6 @@ def train_doc2vec(data):
 
     return model, document_vectors
 
-
 def store_document_vectors(documents, document_vectors):
     # delete old collection if exists
     existing_collections = [c.name for c in client.list_collections()]
@@ -78,19 +76,6 @@ def store_document_vectors(documents, document_vectors):
         embeddings=document_vectors.tolist(),
         metadatas=metadatas
     )
-
-def document_clustering():
-    # get documents and vectors
-    collection = client.get_or_create_collection(name=COLLECTION_NAME)
-    result = collection.get(
-        include=["documents", "embeddings"]
-    )
-    ids = result["ids"]
-    documents = result["documents"]
-    embeddings = result["embeddings"]
-
-    ######## PUT CLUSTERING CODE HERE
-
 
 def run_pipeline_once():  # NEW
     try:
@@ -122,9 +107,6 @@ def run_pipeline_once():  # NEW
         logging.info("Processing done. Writing vectors to Chroma ...")
         store_document_vectors(data, document_vectors)
         logging.info("Chroma updated.")
-        logging.info("Clustering ...")
-        document_clustering()
-        logging.info("Clustering done.")
     except Exception as e:
         logging.exception("Database updates or vectorization failed: %s", e)
 
